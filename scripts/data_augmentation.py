@@ -5,8 +5,12 @@ from typing import List, Tuple
 
 import numpy as np
 import torch
-import albumentations as A
 from PIL import Image
+import torchvision.transforms as T
+
+# CIFAR-100 statistics used for normalization / denormalization
+CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
+CIFAR100_STD = (0.2675, 0.2565, 0.2761)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ImageAugmenter:
-    """Class to handle image augmentation operations using Albumentations."""
+    """Class to handle CIFAR-style image augmentation operations."""
 
     def __init__(
         self,
@@ -39,30 +43,21 @@ class ImageAugmenter:
 
         self._set_seed()
 
-        # Define Albumentations pipeline
-        self.transform = A.Compose(
+        # Define torchvision-based augmentation pipeline so that
+        # offline augmentations are consistent with the on-the-fly
+        # augmentations used during training.
+        self._to_pil = T.ToPILImage()
+        self.transform = T.Compose(
             [
-                A.Rotate(limit=15, p=0.8),
-                A.HorizontalFlip(p=0.5),
-                A.ShiftScaleRotate(
-                    shift_limit=0.1,
-                    scale_limit=0.1,
-                    rotate_limit=0,
-                    p=0.8,
-                    border_mode=0,  # cv2.BORDER_CONSTANT
-                ),
-                A.ColorJitter(
-                    brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.8
-                ),
-                A.OneOf(
-                    [
-                        A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-                        A.MotionBlur(blur_limit=7, p=0.5),
-                    ],
-                    p=0.3,
-                ),
-                A.RandomBrightnessContrast(p=0.2),
+                T.RandomCrop(32, padding=4, padding_mode="reflect"),
+                T.RandomHorizontalFlip(p=0.5),
+                T.AutoAugment(T.AutoAugmentPolicy.CIFAR10),
+                T.ToTensor(),
+                T.Normalize(CIFAR100_MEAN, CIFAR100_STD),
             ]
+        )
+        self.random_erasing = T.RandomErasing(
+            p=0.25, value="random", scale=(0.02, 0.33), ratio=(0.3, 3.3)
         )
 
     def _set_seed(self):
@@ -75,7 +70,7 @@ class ImageAugmenter:
 
     def augment_image(self, image: Image.Image) -> Image.Image:
         """
-        Apply augmentation transforms to a single image using Albumentations.
+        Apply augmentation transforms to a single image.
 
         Args:
             image: PIL Image to augment.
@@ -83,15 +78,20 @@ class ImageAugmenter:
         Returns:
             Augmented PIL Image.
         """
-        # Convert PIL to NumPy array (RGB)
-        image_np = np.array(image)
+        # Apply torchvision transform pipeline.
+        tensor = self.transform(image)
+        tensor = self.random_erasing(tensor)
 
-        # Apply Albumentations transform
-        augmented = self.transform(image=image_np)
-        augmented_image_np = augmented["image"]
+        # Denormalize before converting back to PIL for saving.
+        tensor = self._denormalize(tensor)
+        tensor = torch.clamp(tensor, 0.0, 1.0)
+        return self._to_pil(tensor)
 
-        # Convert back to PIL Image
-        return Image.fromarray(augmented_image_np.astype(np.uint8))
+    def _denormalize(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Convert a normalized tensor back to the [0, 1] range."""
+        mean = torch.tensor(CIFAR100_MEAN, device=tensor.device).view(-1, 1, 1)
+        std = torch.tensor(CIFAR100_STD, device=tensor.device).view(-1, 1, 1)
+        return tensor * std + mean
 
     def process_directory(self, input_dir: str, output_dir: str) -> None:
         """
