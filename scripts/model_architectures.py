@@ -1,37 +1,56 @@
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision.models as models
 
 
-class SimpleCNN(nn.Module):
-    """
-    A simple CNN architecture for image classification
-    """
+def _convert_to_resnetd(block: nn.Module, stride: int) -> None:
+    """Modify the residual block's downsample path following ResNet-D."""
 
-    def __init__(self, num_classes=10):
-        super(SimpleCNN, self).__init__()
-        # Convolutional layers: progressively increase number of filters (3 -> 32 -> 64 -> 128)
-        # 3x3 kernels with padding=1 maintain spatial dimensions before pooling
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)  # 2x2 pooling reduces spatial dimensions by half
-        # Fully connected layers: flatten feature maps and classify
-        self.fc1 = nn.Linear(128 * 4 * 4, 512)  # 128 channels * 4x4 spatial resolution
-        self.fc2 = nn.Linear(512, num_classes)
-        self.dropout = nn.Dropout(0.5)  # Dropout for regularization
+    if not hasattr(block, "downsample") or block.downsample is None:
+        return
 
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 128 * 4 * 4)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.fc2(x)
-        return x
+    in_channels = block.conv1.in_channels
+    out_channels = block.conv3.out_channels
+
+    modules = []
+    if stride > 1:
+        modules.append(
+            nn.AvgPool2d(
+                kernel_size=stride,
+                stride=stride,
+                ceil_mode=True,
+                count_include_pad=False,
+            )
+        )
+    modules.append(nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False))
+    modules.append(nn.BatchNorm2d(out_channels))
+
+    block.downsample = nn.Sequential(*modules)
+
+
+def create_resnet50_e5(num_classes: int) -> nn.Module:
+    """Construct the ResNet-50_E5 backbone described in the assignment."""
+
+    model = models.resnet50(weights=None, replace_stride_with_dilation=[False, False, True])
+
+    # CIFAR-style stem modifications: 3x3 stride1 conv and no initial max-pool.
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    model.maxpool = nn.Identity()
+
+    # Apply ResNet-D downsample tweaks.
+    _convert_to_resnetd(model.layer2[0], stride=2)
+    _convert_to_resnetd(model.layer3[0], stride=2)
+    # Final stage keeps stride=1 (already handled by replace_stride_with_dilation).
+    _convert_to_resnetd(model.layer4[0], stride=1)
+
+    # Replace classification head.
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
+
+    return model
+
 
 def create_model(num_classes, device):
-    """Create and initialize the model"""
-    model = SimpleCNN(num_classes=num_classes)
+    """Create and initialize the model."""
+
+    model = create_resnet50_e5(num_classes=num_classes)
     model = model.to(device)
     return model
