@@ -41,16 +41,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def set_random_seeds(seed):
+def set_random_seeds(seed, device="cpu"):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+    use_cuda = device.startswith("cuda") and torch.cuda.is_available()
+
+    if use_cuda:
+        try:
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        except RuntimeError as exc:  # pragma: no cover - defensive fallback
+            logger.warning(
+                "CUDA seed setup failed on device '%s' (%s); continuing on CPU.",
+                device,
+                exc,
+            )
+
+
+def resolve_device(requested_device: str) -> str:
+    """Validate a requested device string and gracefully fall back to CPU."""
+
+    if requested_device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            logger.warning(
+                "CUDA requested but no compatible GPU is available. Falling back to CPU."
+            )
+            return "cpu"
+
+        try:
+            torch.empty(1, device=requested_device)
+        except (AssertionError, RuntimeError) as exc:
+            logger.warning(
+                "Unable to use CUDA device '%s' (%s). Falling back to CPU.",
+                requested_device,
+                exc,
+            )
+            return "cpu"
+
+    return requested_device
 
 def parse_args():
     """Parse command line arguments"""
@@ -234,7 +266,9 @@ def train(args, model: nn.Module):
     print("\nTraining completed!")
 
     # Load the best model checkpoint saved during training
-    checkpoint = torch.load(args.output_dir + "/models/best_model.pth")
+    checkpoint = torch.load(
+        args.output_dir + "/models/best_model.pth", map_location=args.device
+    )
     model.load_state_dict(checkpoint["state_dict"])
 
     # Retrieve details from the checkpoint
@@ -275,8 +309,11 @@ def main():
     # Parse arguments
     args = parse_args()
 
+    # Ensure the requested device is usable on the current system
+    args.device = resolve_device(args.device)
+
     # Set random seeds
-    set_random_seeds(args.seed)
+    set_random_seeds(args.seed, args.device)
 
     # Print configuration
     logger.info("Starting CIFAR pipeline with configuration:")
