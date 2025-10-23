@@ -82,6 +82,12 @@ def parse_args():
     # Offline augmentation switch（保持原结构）
     parser.add_argument("--offline_aug", action="store_true", help="Run disk-based augmentation before training")
     parser.add_argument("--offline_aug_times", type=int, default=1, help="Augmentations per image when offline")
+
+    parser.add_argument("--eval_test_each_epoch", action="store_true",
+                        help="(分析用) 每个 epoch 结束后评估一次 test（不用于早停/选 best）")
+    parser.add_argument("--test_eval_every", type=int, default=1,
+                        help="每隔多少个 epoch 评估一次 test（默认每个 epoch 都评）")
+
     return parser.parse_args()
 
 
@@ -323,3 +329,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 
