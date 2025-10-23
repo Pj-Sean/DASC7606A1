@@ -179,15 +179,23 @@ def train(args, model):
         tr_loss, tr_acc = train_epoch(
         model, train_loader, criterion, optimizer, args.device, epoch
         )
-        val_loss, val_acc = validate_epoch(model, val_loader, criterion, args.device, epoch)
+        val_loss, val_acc, val_preds, val_labels = validate_epoch(
+            model, val_loader, criterion, args.device, epoch
+        )
+
+        # 计算并记录 F1
+        num_classes = 10 if args.dataset == "cifar10" else 100
+        f1_macro, f1_micro, f1_weighted = compute_f1_scores(val_labels, val_preds, num_classes)
 
         scheduler.step()
 
         logging.info(
-        f"Epoch {epoch:03d}/{args.num_epochs} | "
-        f"Train Loss {tr_loss:.4f} Acc {tr_acc:.2f}% | "
-        f"Val Loss {val_loss:.4f} Acc {val_acc:.2f}%"
-        )
+    f"Epoch {epoch:03d}/{args.num_epochs} | "
+    f"Train Loss {tr_loss:.4f} Acc {tr_acc:.2f}% | "
+    f"Val Loss {val_loss:.4f} Acc {val_acc:.2f}% | "
+    f"F1(macro) {f1_macro:.4f} | F1(micro) {f1_micro:.4f} | F1(weighted) {f1_weighted:.4f}"
+)
+
 
         if val_acc > best_acc:
             best_acc = val_acc
