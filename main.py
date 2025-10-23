@@ -112,6 +112,40 @@ def augment_data(args):
     )
     logger.info(f"Offline augmentation finished → {aug_dir}")
 
+def compute_f1_scores(y_true, y_pred, num_classes: int):
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    cm = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for t, p in zip(y_true, y_pred):
+        cm[t, p] += 1
+
+    # per-class precision/recall/F1
+    tp = np.diag(cm).astype(float)
+    fp = cm.sum(axis=0) - tp
+    fn = cm.sum(axis=1) - tp
+    eps = 1e-12
+    precision = tp / (tp + fp + eps)
+    recall    = tp / (tp + fn + eps)
+    f1_per_class = 2 * precision * recall / (precision + recall + eps)
+
+    # macro
+    f1_macro = np.mean(f1_per_class)
+
+    # micro（单标签多类下，micro-F1 等价于整体准确率）
+    tp_sum = tp.sum()
+    fp_sum = fp.sum()
+    fn_sum = fn.sum()
+    precision_micro = tp_sum / (tp_sum + fp_sum + eps)
+    recall_micro    = tp_sum / (tp_sum + fn_sum + eps)
+    f1_micro = 2 * precision_micro * recall_micro / (precision_micro + recall_micro + eps)
+
+    # weighted（按每类支持度加权）
+    support = cm.sum(axis=1).astype(float)
+    weight = support / (support.sum() + eps)
+    f1_weighted = (f1_per_class * weight).sum()
+
+    return f1_macro, f1_micro, f1_weighted
+
 
 # --------------------------
 # 在线/离线下，构建 DataLoader
@@ -205,7 +239,16 @@ def evaluate(args, model):
     _, val_loader, class_names = build_dataloaders(args)
     criterion = nn.CrossEntropyLoss()
     loss, acc, all_preds, all_labels, all_probs = evaluate_model(model, val_loader, criterion, args.device)
-    logging.info(f"[Test] Loss {loss:.4f} Acc {acc:.2f}%")
+
+    # 🔹 计算并打印 F1（macro/micro/weighted）
+    num_classes = len(class_names)
+    f1_macro, f1_micro, f1_weighted = compute_f1_scores(all_labels, all_preds, num_classes)
+
+    logging.info(
+        f"[Test] Loss {loss:.4f} Acc {acc:.2f}% | "
+        f"F1(macro) {f1_macro:.4f} | F1(micro) {f1_micro:.4f} | F1(weighted) {f1_weighted:.4f}"
+    )
+
 
 
 def main():
