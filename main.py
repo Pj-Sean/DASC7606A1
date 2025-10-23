@@ -34,6 +34,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# main (1).py
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(...)
+    # ... 你已有的参数 ...
+    parser.add_argument("--eval_test_each_epoch", action="store_true",
+                        help="(分析用) 每个epoch结束后评估一次test，但不用于早停/选best")
+    parser.add_argument("--test_eval_every", type=int, default=1,
+                        help="每隔多少个epoch评估一次test（默认每个epoch都评）")
+    return parser.parse_args()
+
 
 def set_random_seeds(seed):
     random.seed(seed)
@@ -189,7 +200,7 @@ def build_model(args):
 # 4) Train
 # --------------------------
 def train(args, model):
-    # 原：train_loader, val_loader, class_names = build_dataloaders(args)
+    # 注意：build_dataloaders 返回 train_loader, val_loader, test_loader, class_names
     train_loader, val_loader, test_loader, class_names = build_dataloaders(args)
 
     criterion = nn.CrossEntropyLoss()
@@ -203,12 +214,19 @@ def train(args, model):
 
     best_acc = 0.0
     os.makedirs(os.path.join(args.output_dir, "models"), exist_ok=True)
+    os.makedirs(os.path.join(args.output_dir, "logs"), exist_ok=True)
+    test_log_csv = os.path.join(args.output_dir, "logs", "test_per_epoch.csv")
+
+    # 如果要写CSV，首次写表头
+    if args.eval_test_each_epoch and not os.path.exists(test_log_csv):
+        with open(test_log_csv, "w", encoding="utf-8") as f:
+            f.write("epoch,test_loss,test_acc,f1_macro,f1_micro,f1_weighted\n")
 
     for epoch in range(1, args.num_epochs + 1):
         tr_loss, tr_acc = train_epoch(model, train_loader, criterion, optimizer, args.device, epoch)
         val_loss, val_acc, val_preds, val_labels = validate_epoch(model, val_loader, criterion, args.device, epoch)
 
-        num_classes = 10 if args.dataset == "cifar10" else 100
+        num_classes = 10 if args.dataset.lower() == "cifar10" else 100
         f1_macro, f1_micro, f1_weighted = compute_f1_scores(val_labels, val_preds, num_classes)
 
         scheduler.step()
@@ -220,6 +238,22 @@ def train(args, model):
             f"F1(macro) {f1_macro:.4f} | F1(micro) {f1_micro:.4f} | F1(weighted) {f1_weighted:.4f}"
         )
 
+        # —— 仅记录 test 指标，不用于选 best —— #
+        if args.eval_test_each_epoch and (epoch % args.test_eval_every == 0):
+            # 直接复用验证的评估函数：不做梯度、只forward
+            t_loss, t_acc, t_preds, t_labels = validate_epoch(model, test_loader, criterion, args.device, epoch)
+            t_f1_macro, t_f1_micro, t_f1_weighted = compute_f1_scores(t_labels, t_preds, num_classes)
+
+            logging.info(
+                f"[TEST(each-epoch)] Epoch {epoch:03d} | "
+                f"Loss {t_loss:.4f} Acc {t_acc:.2f}% | "
+                f"F1(macro) {t_f1_macro:.4f} | F1(micro) {t_f1_micro:.4f} | F1(weighted) {t_f1_weighted:.4f}"
+            )
+            # 仅追加到CSV，供后续画曲线/诊断
+            with open(test_log_csv, "a", encoding="utf-8") as f:
+                f.write(f"{epoch},{t_loss:.6f},{t_acc:.4f},{t_f1_macro:.6f},{t_f1_micro:.6f},{t_f1_weighted:.6f}\n")
+
+        # —— 仍然只用 val 决定 best —— #
         if val_acc > best_acc:
             best_acc = val_acc
             save_checkpoint(
@@ -228,8 +262,9 @@ def train(args, model):
             )
             logging.info(f"  ↳ New best Acc {best_acc:.2f}%, checkpoint saved.")
 
-    # 返回 test_loader 以便最终评估
+    # 保持原有返回：用于最终一次正式 test 评估
     return model, test_loader, class_names, best_acc
+
 
 
 
@@ -251,6 +286,15 @@ def evaluate(args, model, test_loader, class_names):
 
 
 
+
+
+
+# --- 在 parse_args() 里补两个“分析用”的可选参数（不需要就可以不加） ---
+# parser.add_argument("--eval_test_each_epoch", action="store_true",
+#                     help="(仅分析) 每个 epoch 结束后评估一次 test（不用于早停/选 best）")
+# parser.add_argument("--test_eval_every", type=int, default=1,
+#                     help="每隔多少个 epoch 评一次 test，默认每个 epoch 都评")
+
 def main():
     args = parse_args()
     set_random_seeds(args.seed)
@@ -259,14 +303,22 @@ def main():
     for k, v in vars(args).items():
         logger.info(f"{k}: {v}")
 
-    collect_data(args)
-    augment_data(args)  # 可选（离线）
+    # 1) 数据准备：保持你原有的两步
+    collect_data(args)     # 下载/整理原始数据
+    augment_data(args)     # （可选的离线增强；若你现在使用在线增强，这里也照旧保留，不会破坏流程）
+
+    # 2) 构建模型：不变
     model = build_model(args)
-    model, test_loader, class_names, best_acc = train(args, model)
+
+    # 3) 训练：内部完成 train/val 划分；如果你加了 --eval_test_each_epoch，会在每个 epoch 记录 test 指标
+    #    训练阶段“只用 val 决定 best”，不会用 test 做任何决策
+    model, test_loader, class_names, best_val_acc = train(args, model)
+
+    # 4) 最终评估（只此一次正式 test）
+    #    evaluate 内部只使用 test_loader；这就是最终对外报告的指标
     evaluate(args, model, test_loader, class_names)
 
-
-    logger.info(f"Done. Best Val/Test Acc: {best_acc:.2f}%")
+    logger.info(f"Done. Best Val Acc: {best_val_acc:.2f}%")
 
 
 if __name__ == "__main__":
