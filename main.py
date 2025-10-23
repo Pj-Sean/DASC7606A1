@@ -119,33 +119,61 @@ def augment_data(args):
 # --------------------------
 # 在线/离线下，构建 DataLoader
 # --------------------------
+# --------------------------
+# 在线/离线下，构建 DataLoader
+# --------------------------
 def build_dataloaders(args):
     """
-    - 在线增强：从 augment_dataset(..., save_to_disk=False) 拿到 (train_tf, test_tf)
-    - 离线增强：你可以把 root 改成 data/augmented；这里保持默认用 raw
+    - 在线增强：augment_dataset(..., save_to_disk=False) -> (train_tf, test_tf)
+    - 训练集内做 80/20 切分：train 子集用 train_tf；val 子集用 test_tf（评估增强）
+    - test 集仅在最终评估使用
     """
+    from torch.utils.data import Subset
     train_root = os.path.join(args.data_dir, "raw", "train")
-    test_root = os.path.join(args.data_dir, "raw", "test")
+    test_root  = os.path.join(args.data_dir, "raw", "test")
 
-    # 在线增强（返回 transforms）
+    # 在线增强（train_tf = 训练增强；test_tf = 评估增强）
     train_tf, test_tf = augment_dataset(
-        input_dir=None, output_dir=None,  # 在线增强不需要这些
+        input_dir=None, output_dir=None,
         augmentations_per_image=1, seed=args.seed,
         dataset=args.dataset, save_to_disk=False
     )
 
-    train_set = datasets.ImageFolder(root=train_root, transform=train_tf)
-    val_set = datasets.ImageFolder(root=test_root, transform=test_tf)
+    # 同一物理样本，两套数据对象绑定不同 transform
+    full_train_for_train = datasets.ImageFolder(root=train_root, transform=train_tf)
+    full_train_for_val   = datasets.ImageFolder(root=train_root, transform=test_tf)
+
+    n_total = len(full_train_for_train)
+    n_val   = int(n_total * 0.2)
+    n_train = n_total - n_val
+
+    g = torch.Generator()
+    g.manual_seed(args.seed)
+    indices = torch.randperm(n_total, generator=g)
+    train_idx = indices[:n_train]
+    val_idx   = indices[n_train:]
+
+    train_set = Subset(full_train_for_train, train_idx)
+    val_set   = Subset(full_train_for_val,   val_idx)
+
+    # 测试集（仅最终评估用）
+    test_set  = datasets.ImageFolder(root=test_root, transform=test_tf)
 
     train_loader = DataLoader(
         train_set, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=True
+        num_workers=args.num_workers, pin_memory=True, drop_last=True
     )
     val_loader = DataLoader(
         val_set, batch_size=args.batch_size, shuffle=False,
         num_workers=args.num_workers, pin_memory=True
     )
-    return train_loader, val_loader, train_set.classes
+    test_loader = DataLoader(
+        test_set, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=True
+    )
+    # 返回 test_loader，供最终评估
+    return train_loader, val_loader, test_loader, full_train_for_train.classes
+
 
 
 # --------------------------
@@ -161,7 +189,8 @@ def build_model(args):
 # 4) Train
 # --------------------------
 def train(args, model):
-    train_loader, val_loader, class_names = build_dataloaders(args)
+    # 原：train_loader, val_loader, class_names = build_dataloaders(args)
+    train_loader, val_loader, test_loader, class_names = build_dataloaders(args)
 
     criterion = nn.CrossEntropyLoss()
     optimizer, scheduler = define_optimizer_and_scheduler(
@@ -176,26 +205,20 @@ def train(args, model):
     os.makedirs(os.path.join(args.output_dir, "models"), exist_ok=True)
 
     for epoch in range(1, args.num_epochs + 1):
-        tr_loss, tr_acc = train_epoch(
-        model, train_loader, criterion, optimizer, args.device, epoch
-        )
-        val_loss, val_acc, val_preds, val_labels = validate_epoch(
-            model, val_loader, criterion, args.device, epoch
-        )
+        tr_loss, tr_acc = train_epoch(model, train_loader, criterion, optimizer, args.device, epoch)
+        val_loss, val_acc, val_preds, val_labels = validate_epoch(model, val_loader, criterion, args.device, epoch)
 
-        # 计算并记录 F1
         num_classes = 10 if args.dataset == "cifar10" else 100
         f1_macro, f1_micro, f1_weighted = compute_f1_scores(val_labels, val_preds, num_classes)
 
         scheduler.step()
 
         logging.info(
-    f"Epoch {epoch:03d}/{args.num_epochs} | "
-    f"Train Loss {tr_loss:.4f} Acc {tr_acc:.2f}% | "
-    f"Val Loss {val_loss:.4f} Acc {val_acc:.2f}% | "
-    f"F1(macro) {f1_macro:.4f} | F1(micro) {f1_micro:.4f} | F1(weighted) {f1_weighted:.4f}"
-)
-
+            f"Epoch {epoch:03d}/{args.num_epochs} | "
+            f"Train Loss {tr_loss:.4f} Acc {tr_acc:.2f}% | "
+            f"Val Loss {val_loss:.4f} Acc {val_acc:.2f}% | "
+            f"F1(macro) {f1_macro:.4f} | F1(micro) {f1_micro:.4f} | F1(weighted) {f1_weighted:.4f}"
+        )
 
         if val_acc > best_acc:
             best_acc = val_acc
@@ -205,18 +228,19 @@ def train(args, model):
             )
             logging.info(f"  ↳ New best Acc {best_acc:.2f}%, checkpoint saved.")
 
-    return model, val_loader, class_names, best_acc
+    # 返回 test_loader 以便最终评估
+    return model, test_loader, class_names, best_acc
+
 
 
 # --------------------------
 # 5) Evaluate
 # --------------------------
-def evaluate(args, model):
-    _, val_loader, class_names = build_dataloaders(args)
+def evaluate(args, model, test_loader, class_names):
     criterion = nn.CrossEntropyLoss()
-    loss, acc, all_preds, all_labels, all_probs = evaluate_model(model, val_loader, criterion, args.device)
+    from scripts.evaluation_metrics import evaluate_model
+    loss, acc, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, args.device)
 
-    # 🔹 计算并打印 F1（macro/micro/weighted）
     num_classes = len(class_names)
     f1_macro, f1_micro, f1_weighted = compute_f1_scores(all_labels, all_preds, num_classes)
 
@@ -238,8 +262,9 @@ def main():
     collect_data(args)
     augment_data(args)  # 可选（离线）
     model = build_model(args)
-    model, val_loader, class_names, best_acc = train(args, model)
-    evaluate(args, model)
+    model, test_loader, class_names, best_acc = train(args, model)
+    evaluate(args, model, test_loader, class_names)
+
 
     logger.info(f"Done. Best Val/Test Acc: {best_acc:.2f}%")
 
