@@ -9,6 +9,48 @@ import torch.optim as optim
 from scripts.data_augmentation import mixup_data, cutmix_data, mixup_cutmix_criterion
 
 
+# --- 加在文件开头其它 import 旁边 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+# ...（其余 import 保留）
+
+# --- 新增：F1 计算（macro/micro/weighted），纯 numpy 实现 ---
+def compute_f1_scores(y_true, y_pred, num_classes: int):
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    cm = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for t, p in zip(y_true, y_pred):
+        cm[t, p] += 1
+
+    tp = np.diag(cm).astype(float)
+    fp = cm.sum(axis=0) - tp
+    fn = cm.sum(axis=1) - tp
+    eps = 1e-12
+
+    precision = tp / (tp + fp + eps)
+    recall    = tp / (tp + fn + eps)
+    f1_per_class = 2 * precision * recall / (precision + recall + eps)
+
+    f1_macro = float(np.mean(f1_per_class))
+
+    tp_sum = tp.sum()
+    fp_sum = fp.sum()
+    fn_sum = fn.sum()
+    precision_micro = tp_sum / (tp_sum + fp_sum + eps)
+    recall_micro    = tp_sum / (tp_sum + fn_sum + eps)
+    f1_micro = float(2 * precision_micro * recall_micro / (precision_micro + recall_micro + eps))
+
+    support = cm.sum(axis=1).astype(float)
+    weight = support / (support.sum() + eps)
+    f1_weighted = float((f1_per_class * weight).sum())
+    return f1_macro, f1_micro, f1_weighted
+
+
+
 # ==============================================================
 # 1. 训练单个 epoch
 # ==============================================================
@@ -66,6 +108,8 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
     correct = 0
     total = 0
 
+    all_preds, all_labels = [], []
+
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch} [Validate]", leave=False)
 
     for inputs, labels in progress_bar:
@@ -78,6 +122,10 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
 
+        # 收集用于 F1 计算
+        all_preds.extend(predicted.detach().cpu().numpy().tolist())
+        all_labels.extend(labels.detach().cpu().numpy().tolist())
+
         progress_bar.set_postfix({
             "Loss": f"{loss.item():.4f}",
             "Acc": f"{100.0 * correct / total:.2f}%"
@@ -85,7 +133,8 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
 
     epoch_loss = running_loss / total
     epoch_acc = 100.0 * correct / total
-    return epoch_loss, epoch_acc
+    # 现在返回 4 项
+    return epoch_loss, epoch_acc, all_preds, all_labels
 
 
 # ==============================================================
