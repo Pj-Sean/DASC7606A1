@@ -67,7 +67,7 @@ def parse_args():
 
     # Hyperparams
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_epochs", type=int, default=300)
+    parser.add_argument("--num_epochs", type=int, default=350)
     parser.add_argument("--warmup_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
@@ -309,24 +309,34 @@ def main():
     for k, v in vars(args).items():
         logger.info(f"{k}: {v}")
 
-    # 1) 数据准备：保持你原有的两步
-    collect_data(args)     # 下载/整理原始数据
-    augment_data(args)     # （可选的离线增强；若你现在使用在线增强，这里也照旧保留，不会破坏流程）
+    # 1) 数据准备
+    collect_data(args)
+    augment_data(args)
 
-    # 2) 构建模型：不变
+    # 2) 构建模型
     model = build_model(args)
 
-    # 3) 训练：内部完成 train/val 划分；如果你加了 --eval_test_each_epoch，会在每个 epoch 记录 test 指标
-    #    训练阶段“只用 val 决定 best”，不会用 test 做任何决策
+    # 3) 训练（返回最佳验证准确率）
     model, test_loader, class_names, best_val_acc = train(args, model)
 
-    # 4) 最终评估（只此一次正式 test）
-    #    evaluate 内部只使用 test_loader；这就是最终对外报告的指标
-    evaluate(args, model, test_loader, class_names)
+    # 4) 最终在测试集上评估
+    criterion = nn.CrossEntropyLoss()
+    loss, acc, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, args.device)
 
-    logger.info(f"Done. Best Val Acc: {best_val_acc:.2f}%")
+    num_classes = len(class_names)
+    f1_macro, f1_micro, f1_weighted = compute_f1_scores(all_labels, all_preds, num_classes)
+
+    # 5) 输出最终结果
+    logger.info(
+        f"Done. Best Val Acc: {best_val_acc:.2f}% | "
+        f"Final Test Acc: {acc:.2f}% | "
+        f"F1(macro): {f1_macro:.4f} | "
+        f"F1(micro): {f1_micro:.4f} | "
+        f"F1(weighted): {f1_weighted:.4f}"
+    )
 
 
 if __name__ == "__main__":
     main()
+
  
