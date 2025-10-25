@@ -67,7 +67,7 @@ def parse_args():
 
     # Hyperparams
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_epochs", type=int, default=320)
+    parser.add_argument("--num_epochs", type=int, default=500)
     parser.add_argument("--warmup_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=5e-4)

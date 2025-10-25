@@ -167,7 +167,7 @@ def define_optimizer_and_scheduler(model, total_epochs=300, warmup_epochs=20, ba
         weight_decay=weight_decay,
     )
 
-    eta_min = 1e-5
+    eta_min = 1e-6
 
     def lr_lambda(current_epoch: int):
         if current_epoch < warmup_epochs:
