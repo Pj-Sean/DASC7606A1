@@ -190,9 +190,8 @@ def define_optimizer_and_scheduler(
 
         elif current_epoch < warmup_epochs + cosine_epochs:
             # 2) Cosine 退火：从 1 → (lr_min/base_lr)
-            progress = (current_epoch - warmup_epochs) / float(max(1, cosine_epochs))
-            cosine_factor = 0.5 * (1.0 + math.cos(math.pi * progress))
-            return (lr_min / base_lr) + (1 - lr_min / base_lr) * cosine_factor
+            progress = (current_epoch - warmup_epochs) / float(cosine_epochs)
+            return max(lr_min / base_lr, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
         else:
             # 3) Hold 阶段：保持 lr = lr_min
