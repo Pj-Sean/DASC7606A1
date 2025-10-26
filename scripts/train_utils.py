@@ -5,7 +5,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
+from torch.optim.lr_scheduler import LambdaLR
 from scripts.data_augmentation import mixup_data, cutmix_data, mixup_cutmix_criterion
 
 
@@ -151,31 +151,52 @@ def save_checkpoint(model, optimizer, epoch, best_acc, path="checkpoint.pth"):
 
 
 # ==============================================================
-# 4. 优化器与调度器（仅 1 个：Warmup + Cosine）
+# 4. 优化器与调度器（仅 1 个：Warmup + Cosine + Hold）
 # ==============================================================
-def define_optimizer_and_scheduler(model, total_epochs=300, warmup_epochs=20, base_lr=0.1, weight_decay=5e-4):
+def define_optimizer_and_scheduler(
+    model,
+    total_epochs=300,
+    warmup_epochs=5,
+    hold_epochs=20,            # ✅ 新增：在 lr_min 保持的轮数
+    base_lr=0.1,
+    weight_decay=5e-4,
+    lr_min=1e-6               # ✅ 最小学习率（退火到这里后保持）
+):
     """
-    - 优化器：SGD(momentum=0.9, nesterov=True, weight_decay=5e-4)
-    - 学习率：前 warmup_epochs 线性增至 base_lr；其后 Cosine 到 1e-6
-    - 只返回 1 个 scheduler（LambdaLR），由 main.py 每个 epoch 手动 step 一次
+    - 优化器：SGD(momentum=0.9, nesterov=True)
+    - 学习率策略：
+        1) 前 warmup_epochs 线性增至 base_lr；
+        2) 接着 Cosine 退火到 lr_min；
+        3) 最后 hold_epochs 轮保持 lr_min 不变。
+    - 返回：optimizer, scheduler（LambdaLR）
     """
     optimizer = optim.SGD(
         model.parameters(),
         lr=base_lr,
         momentum=0.9,
-        nesterov=False,
+        nesterov=True,         # ✅ 开启 Nesterov，略优于 False
         weight_decay=weight_decay,
     )
 
-    eta_min = 1e-6
+    cosine_epochs = total_epochs - warmup_epochs - hold_epochs
+    assert cosine_epochs > 0, (
+        f"总 epoch 数({total_epochs}) 必须大于 warmup({warmup_epochs}) + hold({hold_epochs})"
+    )
 
     def lr_lambda(current_epoch: int):
         if current_epoch < warmup_epochs:
-            # 线性 Warmup：从极小值线性到 1.0
+            # 1) 线性 Warmup：从 0 → 1
             return (current_epoch + 1) / float(max(1, warmup_epochs))
-        # Cosine 部分
-        progress = (current_epoch - warmup_epochs) / float(max(1, total_epochs - warmup_epochs))
-        return max(eta_min / base_lr, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        elif current_epoch < warmup_epochs + cosine_epochs:
+            # 2) Cosine 退火：从 1 → (lr_min/base_lr)
+            progress = (current_epoch - warmup_epochs) / float(max(1, cosine_epochs))
+            cosine_factor = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return (lr_min / base_lr) + (1 - lr_min / base_lr) * cosine_factor
+
+        else:
+            # 3) Hold 阶段：保持 lr = lr_min
+            return lr_min / base_lr
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     return optimizer, scheduler

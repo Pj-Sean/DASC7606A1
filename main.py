@@ -71,6 +71,8 @@ def parse_args():
     parser.add_argument("--warmup_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
+    parser.add_argument('--lr_min', type=float, default=1e-6, help='minimum learning rate after cosine')
+    parser.add_argument('--hold-epochs', type=int, default=0, help='epochs to hold at lr_min after cosine')
 
     # Hardware
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
