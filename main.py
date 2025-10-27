@@ -216,10 +216,11 @@ def train(args, model):
         model,
         total_epochs=args.num_epochs,
         warmup_epochs=args.warmup_epochs,
+        hold_epochs=args.hold_epochs,       # <— 之前没传
         base_lr=args.lr,
         weight_decay=args.weight_decay,
-    )
-
+        lr_min=args.lr_min                  # <— 之前没传
+        )
     best_acc = 0.0
     os.makedirs(os.path.join(args.output_dir, "models"), exist_ok=True)
     os.makedirs(os.path.join(args.output_dir, "logs"), exist_ok=True)
