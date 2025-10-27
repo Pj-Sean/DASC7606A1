@@ -195,7 +195,7 @@ def define_optimizer_and_scheduler(
 
         else:
             # 3) Hold 阶段：保持 lr = lr_min
-            return lr_min / base_lr * 5
+            return base_lr / base_lr * 0.01
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     return optimizer, scheduler
