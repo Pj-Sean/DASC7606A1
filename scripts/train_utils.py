@@ -140,12 +140,12 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
 # ==============================================================
 # 3. 保存模型
 # ==============================================================
-def save_checkpoint(model, optimizer, epoch, best_acc, path="checkpoint.pth"):
+def save_checkpoint(model, optimizer, epoch, best_metric, path="checkpoint.pth"):
     state = {
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "epoch": epoch,
-        "best_acc": best_acc,
+        "best_acc": best_metric,
     }
     torch.save(state, path)
 

@@ -81,6 +81,10 @@ def parse_args():
     # Misc
     parser.add_argument("--seed", type=int, default=42)
 
+    #criterian
+    parser.add_argument("--selection_metric", type=str, choices=["acc", "f1_macro", "f1_micro", "f1_weighted"], default="f1_macro", help="用哪个验证集指标来判定保存最佳模型（默认 macro-F1）")
+
+
     # Offline augmentation switch（保持原结构）
     parser.add_argument("--offline_aug", action="store_true", help="Run disk-based augmentation before training")
     parser.add_argument("--offline_aug_times", type=int, default=1, help="Augmentations per image when offline")
@@ -221,7 +225,8 @@ def train(args, model):
         weight_decay=args.weight_decay,
         lr_min=args.lr_min                  # <— 之前没传
         )
-    best_acc = 0.0
+    best_metric = float("-inf")
+
     os.makedirs(os.path.join(args.output_dir, "models"), exist_ok=True)
     os.makedirs(os.path.join(args.output_dir, "logs"), exist_ok=True)
     test_log_csv = os.path.join(args.output_dir, "logs", "test_per_epoch.csv")
@@ -263,16 +268,33 @@ def train(args, model):
                 f.write(f"{epoch},{t_loss:.6f},{t_acc:.4f},{t_f1_macro:.6f},{t_f1_micro:.6f},{t_f1_weighted:.6f}\n")
 
         # —— 仍然只用 val 决定 best —— #
-        if val_acc > best_acc:
-            best_acc = val_acc
+        metric_map = {
+            "acc": val_acc,
+            "f1_macro": f1_macro,
+            "f1_micro": f1_micro,
+            "f1_weighted": f1_weighted,
+        }
+        current_metric = metric_map[args.selection_metric]
+
+        # 第一次可设为 -inf 以确保能保存
+        if epoch == 1:
+            best_metric = float("-inf")
+        # 如果你把 best_metric 放在 train() 外面初始化，也可以直接在进入循环前写：
+        # best_metric = float("-inf")
+
+        if current_metric > best_metric:
+            best_metric = current_metric
             save_checkpoint(
-                model, optimizer, epoch, best_acc,
-                path=os.path.join(args.output_dir, "models", "best.pth")
+            model, optimizer, epoch, best_metric,
+            path=os.path.join(args.output_dir, "models", "best.pth")
             )
-            logging.info(f"  ↳ New best Acc {best_acc:.2f}%, checkpoint saved.")
+            logging.info(
+                f"  ↳ New best {args.selection_metric} {best_metric:.4f}, checkpoint saved."
+            )
+
 
     # 保持原有返回：用于最终一次正式 test 评估
-    return model, test_loader, class_names, best_acc
+    return model, test_loader, class_names, best_metric
 
 
 
