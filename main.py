@@ -67,12 +67,12 @@ def parse_args():
 
     # Hyperparams
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_epochs", type=int, default=300)
+    parser.add_argument("--num_epochs", type=int, default=350)
     parser.add_argument("--warmup_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument('--lr_min', type=float, default=1e-6, help='minimum learning rate after cosine')
-    parser.add_argument('--hold-epochs', type=int, default=0, help='epochs to hold at lr_min after cosine')
+    parser.add_argument('--hold-epochs', type=int, default=100, help='epochs to hold at lr_min after cosine')
 
     # Hardware
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -293,9 +293,16 @@ def train(args, model):
             )
 
 
-    # 保持原有返回：用于最终一次正式 test 评估
-    return model, test_loader, class_names, best_metric
+        # ✅ 加载最佳模型参数后再返回
+    best_model_path = os.path.join(args.output_dir, "models", "best.pth")
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path, map_location=args.device)
+        model.load_state_dict(checkpoint["model_state"])
+        logging.info(f"Loaded best model from epoch {checkpoint['epoch']} with {args.selection_metric}={checkpoint['best_acc']:.4f}")
+    else:
+        logging.warning("⚠️ No best model checkpoint found, returning last epoch model.")
 
+    return model, test_loader, class_names, best_metric
 
 
 
